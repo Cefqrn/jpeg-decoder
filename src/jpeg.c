@@ -5,6 +5,7 @@
 #define CHAR_SIZE 8
 #define WORD_SIZE 2 * CHAR_SIZE
 #define READ_WORD(fp) getc(fp) << CHAR_SIZE | getc(fp)
+#define GET_WORD(data, index) (data[index] << CHAR_SIZE) + data[index + 1]
 
 typedef enum SegmentMarker {
     SOI = 0xFFD8,
@@ -29,6 +30,14 @@ typedef struct component_data {
 } component_data;
 
 typedef struct jpeg_data {
+    uint8_t versionMajor;
+    uint8_t versionMinor;
+    uint8_t pixelDensityUnit;
+    uint8_t hPixelDensity;
+    uint8_t vPixelDensity;
+    uint8_t thumbWidth;
+    uint8_t thumbHeight;
+    uint8_t (**thumbPixels)[3]; // RGB
     uint16_t width;
     uint16_t height;
     uint8_t (**pixels)[3]; // YCbCr
@@ -38,15 +47,40 @@ typedef struct jpeg_data {
 } jpeg_data;
 
 static int parse_APP0(jpeg_data *imageData, uint8_t *data, size_t length) {
-    // not implemented
+    if ((imageData->versionMajor = data[5]) != 1) {
+        puts("Invalid major version number.");
+        return -1;
+    }
+
+    imageData->versionMinor = data[6];
+    imageData->pixelDensityUnit = data[7];
+    imageData->hPixelDensity = GET_WORD(data, 8);
+    imageData->vPixelDensity = GET_WORD(data, 10);
+    imageData->thumbWidth = data[12];
+    imageData->thumbHeight = data[13];
+
+    // No thumbnail
+    if (!(imageData->thumbWidth && imageData->thumbHeight)) {
+        return 0;
+    }
+
+    imageData->thumbPixels = malloc(imageData->thumbWidth * sizeof(*imageData->thumbPixels));
+    for (size_t x=0; x < imageData->thumbWidth; ++x) {
+        imageData->thumbPixels[x] = malloc(imageData->thumbHeight * sizeof(**imageData->thumbPixels));
+        for (size_t y=0; y < imageData->thumbHeight; ++y) {
+            for (size_t j=0; j < 3; ++j) {
+                imageData->thumbPixels[x][y][j] = data[14 + (x*imageData->thumbWidth + y) * 3 + j];
+            }
+        }
+    }
 
     return -1;
 }
 
 static int parse_SOF(jpeg_data *imageData, uint8_t *data, size_t length) {
     imageData->precision = data[0];
-    imageData->height = (data[1] << CHAR_SIZE) + data[2];
-    imageData->width = (data[3] << CHAR_SIZE) + data[4];
+    imageData->height = GET_WORD(data, 1);
+    imageData->width = GET_WORD(data, 3);
     imageData->componentCount = data[5];
 
     imageData->componentData = malloc(imageData->componentCount * sizeof *imageData->componentData);
@@ -117,7 +151,23 @@ static void free_jpeg(jpeg_data *data) {
         free(data->componentData[i]);
     }
     free(data->componentData);
+
+    for (size_t x=0; x < data->width; ++x) {
+        free(data->pixels[x]);
+    }
+    free(data->pixels);
+
+    for (size_t x=0; x < data->thumbWidth; ++x) {
+        free(data->thumbPixels[x]);
+    }
+    free(data->thumbPixels);
+
+    if (!(imageData->thumbWidth && imageData->thumbHeight)) {
+        return 0;
+    }
+
     free(data);
+
 }
 
 image *jpg_fparse(char *path) {
